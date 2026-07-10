@@ -1,75 +1,91 @@
-﻿# Morphological U-Net
+# Part 1 — Uncertainty quantification & calibration (MC-Dropout U-Net)
 
-The project investigates whether morphological variations of the U-Net improves segmentation over the unaltered baseline. This is done in the context of the Medical Segmentation Decathlon. Morphological variants include top and/or bottom hat residuals as additional input channels, either precomputed with a fixed structuring element or computed by a morphological block with a trainable structuring element and a morphological loss function added to the preexisting loss.
+Investigates **predictive uncertainty** of a U-Net on medical image segmentation using
+**MC-Dropout**, and whether **calibration** improves it. Two Medical Segmentation Decathlon
+datasets are run independently:
 
-## Setup & Run
+- **Hippocampus** (Task04) — files end in **`_hipp`**
+- **Spleen** (Task09) — files end in **`_spleen`**
 
-Data available in http://medicaldecathlon.com. Place in `./data/` or add path to config.
+For each dataset two models are trained and compared:
 
-Install requirements :
+- **`mcdropout`** — baseline MC-Dropout U-Net (loss = Dice + CE)
+- **`mcdropout_cal`** — train-time calibrated variant (loss = Dice + CE + λ·soft-binned-ECE)
+
+For every model we report **Dice** (deterministic) and the **uncertainty/calibration** quality
+(foreground / macro **ECE**) both **before** and **after** post-hoc **temperature scaling**.
+
+---
+
+## How to run — the whole experiment, one command
+
+Each dataset has a self-contained driver in `run/` that does everything: sparse-clones this
+subfolder of the monorepo → installs deps → downloads the dataset → preprocesses → per fold
+trains + tests + calibrates + dumps uncertainty for both models → prints a Dice/ECE/temperature
+summary. GPU VM recommended (torch assumed pre-installed).
+
+```bash
+# Hippocampus (small, 64x64):
+nohup bash run/run_all_hippocampus.sh &     # progress: tail -f ~/hippo-run/run_*.log
+# Spleen (256x256, heavier):
+nohup bash run/run_all_spleen.sh &          # progress: tail -f ~/spleen-run/run_*.log
 ```
-pip install -r requirements.txt
+Defaults run **fold 0** only; set `FOLDS="0 1 2 3 4"` for full 5-fold CV. Results land in
+`<repo>/part1_uncertainty/results/` (and a copy of the log).
+
+---
+
+## How to run — manual, step by step (one fold)
+
+Set the dataset via env vars, then run the `_hipp` or `_spleen` scripts in this order. Example
+for **hippocampus** (swap `_hipp`→`_spleen` and `TASK` for spleen):
+
+```bash
+export TASK=Task04_Hippocampus
+export DATA_DIR=$PWD/data/$TASK        # raw imagesTr/ + labelsTr/ go here
+
+# 1. preprocess: raw NIfTI -> 2-channel (image,label) npy + k-fold splits
+python3 run_preprocessing_mc_hipp.py                 # spleen: run_preprocessing_mc_spleen.py --size 256
+
+# 2. train the two nets (fold 0)
+python3 train_mc_hipp.py             --fold 0 --tag mcdropout     --dropout-p 0.4 --out-dir results
+python3 train_mc_recalibrate_hipp.py --fold 0 --tag mcdropout_cal --dropout-p 0.4 --cal-weight 1.0 --out-dir results
+
+# 3-6. per net (tag in {mcdropout, mcdropout_cal}) run: test -> uncertainty(raw) -> calibrate -> uncertainty(+T)
+python3 test_mc_hipp.py        --fold 0 --tag mcdropout --out-dir results
+python3 uncertainty_mc_hipp.py --fold 0 --tag mcdropout --out-dir results --mc-samples 30 --temperature 1.0 --save-volumes
+python3 calibrate_mc_hipp.py   --fold 0 --tag mcdropout --out-dir results
+python3 uncertainty_mc_hipp.py --fold 0 --tag mcdropout --out-dir results --mc-samples 30 --save-volumes
 ```
 
-Preprocess data :
-```
-python3 run_preprocessing.py
-```
+---
 
-Train and test (5-fold cross-validation) :
+## What each file does, and where its output goes
 
-Baseline Model :
-```
-for f in 0 1 2 3 4; do
-    python3 train_eval.py --tag baseline --fold $f
-done
-```
+All outputs are written under **`results/`** (created automatically). `<tag>` ∈ {`mcdropout`,
+`mcdropout_cal`}, `<F>` = fold.
 
-Static Residuals (one or both) :
-```
-for f in 0 1 2 3 4; do
-    python3 train_eval.py --tag tophat --tophat --fold $f
-done
-```
+| File (`_hipp` / `_spleen`) | Role | Produces → location |
+|---|---|---|
+| `run_preprocessing_mc_*.py` | raw NIfTI → 2-channel `(image,label)` npy + build folds | `data/<TASK>/preprocessed/*.npy`, `data/<TASK>/splits.pkl` |
+| `train_mc_*.py` | train baseline MC-Dropout net (Dice+CE) | `results/<tag>_f<F>_best.pth`, `results/<tag>_f<F>_last.pth` |
+| `train_mc_recalibrate_*.py` | train calibrated net (Dice+CE+λ·SB-ECE) | `results/mcdropout_cal_f<F>_best.pth`, `_last.pth` |
+| `test_mc_*.py` | deterministic (dropout OFF) per-volume metrics | `results/<tag>_f<F>_scores.json` (Dice/ASSD per class) |
+| `uncertainty_mc_*.py` | MC sampling (T passes) → entropy / mutual-info / variance maps + ECE | `results/uncertainty/<tag>_f<F>_uncertainty.json` (raw, temp=1) and `..._cal_uncertainty.json` (with fitted T); uncertainty volumes/PNGs under `results/uncertainty/` |
+| `calibrate_mc_*.py` | fit a post-hoc **temperature** T on the validation fold | temperature reused by the `+T` uncertainty pass |
+| `mc_common_hipp.py` / `mc_common_spleen.py` | shared plumbing: data loaders + `set_seed`/`pick_device`/`run_epoch`/`evaluate_test` | (imported, no output) |
+| `config.py` | paths + task metadata (env-overridable: `TASK`, `DATA_DIR`) | (imported, no output) |
 
-Trainable Residuals (one or both) :
-```
-for f in 0 1 2 3 4; do
-    python3 train_eval.py --tag morphblock --morph-block --tophat --fold $f
-done
-```
+Supporting packages (imported, no direct output): `networks/UNET_mc.py` (MC-Dropout U-Net),
+`loss_functions/` (Dice, CE, top-k, soft-binned-ECE calibration loss), `datasets/`
+(preprocessing + batchgenerators loaders), `evaluation/` (Dice/ASSD evaluator),
+`utilities/` (MC-dropout + temperature-calibration helpers).
 
-Morph Loss Function (could add residuals, fixed or trainable) :
-```
-for f in 0 1 2 3 4; do
-    python3 train_eval.py --tag morphloss --morph-loss --fold $f
-done
-```
-
-Mean score over folds :
-```
-for t in baseline tophat morphblock morphloss; do
-    python3 train_eval.py --fold-mean $t
-done
-```
-
-Compare results :
-```
-python3 train_eval.py --compare baseline_mean_scores.json tophat_mean_scores.json morphblock_mean_scores.json morphloss_mean_scores.json
-```
+## Final summary
+Both `run/run_all_*.sh` end by printing, across the four settings
+(baseline raw / baseline +T / calibrated raw / calibrated +T): mean **Dice**, foreground &
+macro **ECE**, and the fitted **temperature**. The reference numbers come from `results/`.
 
 ## Attribution & License
-
-Derived from the MIC-DKFZ [`basic_unet_example`](https://github.com/MIC-DKFZ/basic_unet_example). 
-
-Copyright © German Cancer Research Center (DKFZ), Division of Medical Image Computing (MIC). Licensed under the Apache License 2.0. 
-
-This is a modified derivative work, original per-file copyright headers are retained. [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-## References
-
-[1] Antonelli, M., et al. "The Medical Segmentation Decathlon." Nature Communications, 2022.
-
-[2] Ronneberger, Olaf, Philipp Fischer, and Thomas Brox. "U-net: Convolutional networks for biomedical image segmentation. " International Conference on Medical image computing and computer-assisted intervention. Springer, Cham, 2015.
-
-[3] Çiçek, Özgün, et al. "3D U-Net: learning dense volumetric segmentation from sparse annotation. "International conference on medical image computing and computer-assisted intervention. Springer, Cham, 2016.
+Derived from the MIC-DKFZ [`basic_unet_example`](https://github.com/MIC-DKFZ/basic_unet_example),
+© German Cancer Research Center (DKFZ). Apache License 2.0 (see `LICENSE`).
