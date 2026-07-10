@@ -13,7 +13,7 @@
 # ASSUMES a GCP Deep Learning VM: torch (+CUDA) PRE-INSTALLED. Everything else is pip-installed.
 #
 # Bootstrap on the fresh VM (two lines):
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/unets/run_5fold.sh
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part3_tradseg/unets/run_5fold.sh
 #   nohup bash run_5fold.sh &          # progress: tail -f ~/tradseg-run/run_all_*.log
 #
 # Env passthrough (all optional): EPOCHS WEAK_FRAC MC UNC BRANCH WORKDIR ...  (see run_all.sh)
@@ -22,7 +22,7 @@ set -uo pipefail
 
 export FOLDS="${FOLDS:-0 1 2 3 4}"
 BRANCH="${BRANCH:-main}"
-RAW="https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/${BRANCH}/unets/run_all.sh"
+RAW="https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/${BRANCH}/part3_tradseg/unets/run_all.sh"
 
 echo "### 5-fold launcher: fetching run_all.sh from '$BRANCH', FOLDS='$FOLDS' ###"
 curl -fsSL "$RAW" -o run_all.sh || { echo "FATAL: could not fetch run_all.sh from $RAW"; exit 1; }

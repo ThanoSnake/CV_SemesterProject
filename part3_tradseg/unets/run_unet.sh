@@ -9,7 +9,7 @@
 # Does NOT run the traditional tiers, and does NOT touch my_unet-uncertainty/.
 #
 # Bootstrap on the VM:
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/unets/run_unet.sh
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part3_tradseg/unets/run_unet.sh
 #   nohup bash run_unet.sh &        # progress: tail -f ~/tradseg-run/run_unet_*.log
 #
 # Env: TAG (mcdropout) FRAC (1.0) EPOCHS (150) MC (30) FOLDS ("0 1 2 3 4") BRANCH (main).
@@ -20,8 +20,9 @@ set -uo pipefail
 TAG="${TAG:-mcdropout}"; FRAC="${FRAC:-1.0}"; EPOCHS="${EPOCHS:-150}"
 MC="${MC:-30}"; FOLDS="${FOLDS:-0 1 2 3 4}"
 
-REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject_TradMethods.git}"
+REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject.git}"
 BRANCH="${BRANCH:-main}"
+SUBDIR="${SUBDIR:-part3_tradseg}"      # this experiment's folder inside the monorepo
 WORKDIR="${WORKDIR:-$HOME/tradseg-run}"
 TASK="${TASK:-Task09_Spleen}"
 
@@ -35,18 +36,24 @@ run() { local l="$1"; shift; echo ""; echo "===== [$(date '+%F %T')] $l ====="; 
         "$@"; local rc=$?; echo "----- $l done in $((SECONDS-t))s (exit $rc) -----"
         [ $rc -eq 0 ] || echo "!!! FAILED: $l (continuing) !!!"; return 0; }
 
-# ---- 1. clone / update ----
+# ---- 1. sparse-clone / update ONLY this experiment's subfolder ----
+#     (needs git >= 2.25; other parts of the monorepo are never downloaded)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD || echo "WARN: update failed; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "branch $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD) | cwd $(pwd)"
-[ -f "unets/train.py" ] || { echo "ERROR: unets/train.py not found (flat layout expected)."; exit 1; }
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "branch $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD) | cwd $(pwd)"
+[ -f "unets/train.py" ] || { echo "ERROR: unets/train.py not found in $SUBDIR/ (flat layout expected)."; exit 1; }
 mkdir -p methods; touch methods/__init__.py
 
 # ---- 2. deps (torch assumed preinstalled; add base reqs + batchgenerators) ----
@@ -63,7 +70,7 @@ PYCHK
 
 # ---- 3. data (once) ----
 export TASK
-export DATA_DIR="$REPO_DIR/data/$TASK"
+export DATA_DIR="$PWD/data/$TASK"
 if [ ! -d "$DATA_DIR/imagesTr" ]; then
     echo ""; echo "===== [$(date '+%F %T')] download raw $TASK (~1.5 GB) ====="
     mkdir -p data
@@ -93,5 +100,5 @@ done
 
 cp "$LOG" "$OUT/" 2>/dev/null || true
 echo ""; echo "############### U-Net DONE $(date '+%F %T') ###############"
-echo "weights/preds/scores -> $REPO_DIR/$OUT/"
+echo "weights/preds/scores -> $REPO_DIR/$SUBDIR/$OUT/"
 ls -1 "$OUT" 2>/dev/null | sed 's/^/  /'

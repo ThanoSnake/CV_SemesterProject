@@ -28,8 +28,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import config
-from train_eval import set_seed, pick_device
-from mc_common import build_plain_loaders
+from mc_common_hipp import build_plain_loaders, set_seed, pick_device
 from networks.UNET_mc import MCDropoutUNet
 from loss_functions.dice_loss import SoftDiceLoss
 from loss_functions.calibration_loss import SoftBinnedECELoss

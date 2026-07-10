@@ -10,10 +10,10 @@
 # summary. No GPU, no U-Net. Tier-3 methods are not implemented yet -> run_tier3.sh will
 # report "nothing to run" until they are added.
 #
-# Bootstrap on the VM (survives an SSH disconnect); use the matching raw URL:
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/run_tier1.sh
+# Bootstrap on the VM (survives an SSH disconnect); grabs just this one script:
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part3_tradseg/run_tier1.sh
 #   nohup bash run_tier1.sh &        # progress: tail -f ~/tradseg-run/run_tier*_*.log
-# Copy results off:  gcloud compute scp --recurse <user>@<vm>:~/tradseg-run/repo/results ./
+# Copy results off:  gcloud compute scp --recurse <user>@<vm>:~/tradseg-run/repo/part3_tradseg/results ./
 #
 # Run the three tiers one at a time (they share the same repo checkout + data).
 #
@@ -22,8 +22,9 @@ set -uo pipefail
 TIER="${TIER:-2}"     # <== ONLY difference between run_tier1.sh / run_tier2.sh / run_tier3.sh
 
 # ============================ CONFIG (override via env) =====================
-REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject_TradMethods.git}"
+REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject.git}"
 BRANCH="${BRANCH:-main}"                                # set BRANCH=master if that is your default
+SUBDIR="${SUBDIR:-part3_tradseg}"                       # this experiment's folder inside the monorepo
 WORKDIR="${WORKDIR:-$HOME/tradseg-run}"
 TASK="${TASK:-Task09_Spleen}"
 REGIMES="${REGIMES:-auto oracle}"
@@ -51,21 +52,29 @@ run() {   # run "label" cmd... : header + timing, CONTINUE on failure
     return 0
 }
 
-# ---- 1. clone (or update) the repo ----
+# ---- 1. sparse-clone (or update) ONLY this experiment's subfolder ----
+#     The monorepo holds all three experiments; we check out just $SUBDIR via a
+#     partial + cone sparse checkout so the other parts are never downloaded.
+#     (needs git >= 2.25; falls back to a normal clone if sparse is unavailable.)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
-    echo "repo present -> updating to origin/$BRANCH (untracked data/ & results/ kept)"
+    echo "repo present -> updating $SUBDIR to origin/$BRANCH (untracked data/ & results/ kept)"
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" \
         && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD \
         || echo "WARN: could not update; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone of branch '$BRANCH' failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "on branch $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)  |  cwd: $(pwd)"
-[ -f "run_experiment.py" ] || { echo "ERROR: run_experiment.py not at repo root (flat layout expected)."; exit 1; }
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "on branch $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD)  |  cwd: $(pwd)"
+[ -f "run_experiment.py" ] || { echo "ERROR: run_experiment.py not found in $SUBDIR/ (flat layout expected)."; exit 1; }
 mkdir -p methods; touch methods/__init__.py
 
 # ---- 2. dependencies (CPU-only; no torch needed) ----
@@ -84,7 +93,7 @@ PYCHK
 
 # ---- 3. data: download + extract once ----
 export TASK
-export DATA_DIR="$REPO_DIR/data/$TASK"
+export DATA_DIR="$PWD/data/$TASK"
 if [ ! -d "$DATA_DIR/imagesTr" ]; then
     echo ""; echo "===== [$(date '+%F %T')] download raw $TASK (~1.5 GB) ====="
     mkdir -p data
@@ -157,5 +166,5 @@ PYSUM
 
 cp "$LOG" "$RESULTS/" 2>/dev/null || true
 echo ""; echo "################ Tier-$TIER DONE  $(date '+%F %T') ################"
-echo "results (one folder per method): $REPO_DIR/$RESULTS/<method>/"
+echo "results (one folder per method): $REPO_DIR/$SUBDIR/$RESULTS/<method>/"
 ls -1 "$RESULTS" 2>/dev/null | sed 's/^/  /'

@@ -20,8 +20,7 @@ import os
 import torch
 
 import config
-from train_eval import pick_device
-from mc_common import build_plain_loaders
+from mc_common_hipp import build_plain_loaders, pick_device
 from networks.UNET_mc import MCDropoutUNet
 from utilities.mc_calibration import fit_temperature_safe
 

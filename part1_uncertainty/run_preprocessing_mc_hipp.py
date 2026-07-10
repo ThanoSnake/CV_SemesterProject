@@ -10,7 +10,7 @@
 #
 
 import config
-from datasets.preprocessing_plain import preprocess_data_plain
+from datasets.preprocessing_plain_hipp import preprocess_data_plain
 from datasets.create_splits import create_splits
 
 if __name__ == "__main__":

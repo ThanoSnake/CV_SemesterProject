@@ -8,19 +8,20 @@
 # WEIGHTS_DIR -> the script copies them into results/ before the (skipped) training.
 # Expected filenames (per fold F): mcdropout_fF_best.pth, mcdropout_cal_fF_best.pth
 #
-# Bootstrap on the VM:
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/UncertaintyUnet/main/run/run_all_hippocampus.sh
+# Bootstrap on the VM (grabs just this one script from the monorepo):
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part1_uncertainty/run/run_all_hippocampus.sh
 #   WEIGHTS_DIR=$HOME/hippo-weights nohup bash run_all_hippocampus.sh &
 #   tail -f ~/hippo-run/run_*.log
-# Copy results off in the morning: ~/hippo-run/repo/results/
+# Copy results off in the morning: ~/hippo-run/repo/part1_uncertainty/results/
 #
 # torch/numpy are assumed preinstalled (DL VM) and are NOT reinstalled.
 
 set -uo pipefail   # NOT -e: a single step failure must not throw away the rest.
 
 # ============================ CONFIG (edit these) ============================
-REPO_URL="https://github.com/ThanoSnake/UncertaintyUnet.git"
-BRANCH="main"                               # branch that holds the code (repo root)
+REPO_URL="https://github.com/ThanoSnake/CV_SemesterProject.git"
+BRANCH="main"                               # branch that holds the code
+SUBDIR="part1_uncertainty"                  # this experiment's folder inside the monorepo
 WORKDIR="${WORKDIR:-$HOME/hippo-run}"       # where the repo + logs live
 TASK="Task04_Hippocampus"
 DATA_TAR_URL="https://msd-for-monai.s3-us-west-2.amazonaws.com/${TASK}.tar"
@@ -67,25 +68,33 @@ if [ -n "$WEIGHTS_DIR" ]; then
         || { echo "WEIGHTS_DIR not found -> aborting"; exit 1; }
 fi
 
-# ---- 1. clone (or force-update) the repo on the branch ----
+# ---- 1. sparse-clone (or force-update) ONLY this experiment's subfolder ----
+#     The monorepo holds all three experiments; we check out just $SUBDIR via a
+#     partial + cone sparse checkout so the other parts are never downloaded.
+#     (needs git >= 2.25; falls back to a normal clone if sparse is unavailable.)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
-    echo "repo present -> force-updating to origin/$BRANCH (code only; data/ & results/ untouched)"
+    echo "repo present -> force-updating $SUBDIR to origin/$BRANCH (code only; data/ & results/ untouched)"
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" \
         && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD \
         || echo "WARN: could not update; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone of branch '$BRANCH' failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "on branch: $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)  |  cwd: $(pwd)"
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "on branch: $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD)  |  cwd: $(pwd)"
 
-[ -f "uncertainty_mc.py" ] || { echo "ERROR: uncertainty_mc.py not found in $(pwd)"; exit 1; }
+[ -f "uncertainty_mc_hipp.py" ] || { echo "ERROR: uncertainty_mc_hipp.py not found in $(pwd)"; exit 1; }
 
 # ---- 2. package dirs need __init__.py (may be .gitignored) ----
-for d in datasets datasets/two_dim datasets/three_dim networks loss_functions evaluation utilities; do
+for d in datasets datasets/two_dim networks loss_functions evaluation utilities; do
     mkdir -p "$d"; touch "$d/__init__.py"
 done
 
@@ -129,7 +138,7 @@ else
         ( cd data && curl -O "$DATA_TAR_URL" && tar -xf "${TASK}.tar" ) \
             || { echo "DOWNLOAD FAILED -> aborting"; exit 1; }
     fi
-    run "preprocess (2-channel npy + splits)" python3 run_preprocessing_mc.py
+    run "preprocess (2-channel npy + splits)" python3 run_preprocessing_mc_hipp.py
     have_prep || { echo "PREPROCESS did not produce a 2-channel npy + splits -> aborting"; exit 1; }
 fi
 
@@ -152,27 +161,27 @@ for FOLD in $FOLDS; do
     if [ -f "results/mcdropout_f${FOLD}_best.pth" ]; then
         echo "===== using existing mcdropout f$FOLD weights (skip training) ====="
     else
-        run "train mcdropout f$FOLD (no weights found)" python3 train_mc.py --fold "$FOLD" --tag mcdropout \
+        run "train mcdropout f$FOLD (no weights found)" python3 train_mc_hipp.py --fold "$FOLD" --tag mcdropout \
             --patch-size "$PATCH" --batch-size "$BATCH" --num-workers "$WORKERS" \
             --epochs "$EPOCHS" --patience "$PATIENCE" --dropout-p "$DROPOUT" --out-dir results
     fi
-    run "test mcdropout f$FOLD"             python3 test_mc.py        --fold "$FOLD" --tag mcdropout $EVAL
-    run "uncertainty raw mcdropout f$FOLD"  python3 uncertainty_mc.py --fold "$FOLD" --tag mcdropout $EVAL --mc-samples "$MC" --temperature 1.0 --save-volumes
-    run "calibrate mcdropout f$FOLD"        python3 calibrate_mc.py   --fold "$FOLD" --tag mcdropout $EVAL
-    run "uncertainty +T mcdropout f$FOLD"   python3 uncertainty_mc.py --fold "$FOLD" --tag mcdropout $EVAL --mc-samples "$MC" --save-volumes
+    run "test mcdropout f$FOLD"             python3 test_mc_hipp.py        --fold "$FOLD" --tag mcdropout $EVAL
+    run "uncertainty raw mcdropout f$FOLD"  python3 uncertainty_mc_hipp.py --fold "$FOLD" --tag mcdropout $EVAL --mc-samples "$MC" --temperature 1.0 --save-volumes
+    run "calibrate mcdropout f$FOLD"        python3 calibrate_mc_hipp.py   --fold "$FOLD" --tag mcdropout $EVAL
+    run "uncertainty +T mcdropout f$FOLD"   python3 uncertainty_mc_hipp.py --fold "$FOLD" --tag mcdropout $EVAL --mc-samples "$MC" --save-volumes
 
     # ===== B. train-time calibrated MC-Dropout (Dice + CE + lambda*SB-ECE) =====
     if [ -f "results/mcdropout_cal_f${FOLD}_best.pth" ]; then
         echo "===== using existing mcdropout_cal f$FOLD weights (skip training) ====="
     else
-        run "train mcdropout_cal f$FOLD (no weights found)" python3 train_mc_recalibrate.py --fold "$FOLD" --tag mcdropout_cal \
+        run "train mcdropout_cal f$FOLD (no weights found)" python3 train_mc_recalibrate_hipp.py --fold "$FOLD" --tag mcdropout_cal \
             --patch-size "$PATCH" --batch-size "$BATCH" --num-workers "$WORKERS" \
             --epochs "$EPOCHS" --patience "$PATIENCE" --dropout-p "$DROPOUT" --cal-weight "$CALW" --out-dir results
     fi
-    run "test mcdropout_cal f$FOLD"             python3 test_mc.py        --fold "$FOLD" --tag mcdropout_cal $EVAL
-    run "uncertainty raw mcdropout_cal f$FOLD"  python3 uncertainty_mc.py --fold "$FOLD" --tag mcdropout_cal $EVAL --mc-samples "$MC" --temperature 1.0 --save-volumes
-    run "calibrate mcdropout_cal f$FOLD"        python3 calibrate_mc.py   --fold "$FOLD" --tag mcdropout_cal $EVAL
-    run "uncertainty +T mcdropout_cal f$FOLD"   python3 uncertainty_mc.py --fold "$FOLD" --tag mcdropout_cal $EVAL --mc-samples "$MC" --save-volumes
+    run "test mcdropout_cal f$FOLD"             python3 test_mc_hipp.py        --fold "$FOLD" --tag mcdropout_cal $EVAL
+    run "uncertainty raw mcdropout_cal f$FOLD"  python3 uncertainty_mc_hipp.py --fold "$FOLD" --tag mcdropout_cal $EVAL --mc-samples "$MC" --temperature 1.0 --save-volumes
+    run "calibrate mcdropout_cal f$FOLD"        python3 calibrate_mc_hipp.py   --fold "$FOLD" --tag mcdropout_cal $EVAL
+    run "uncertainty +T mcdropout_cal f$FOLD"   python3 uncertainty_mc_hipp.py --fold "$FOLD" --tag mcdropout_cal $EVAL --mc-samples "$MC" --save-volumes
 done
 
 # ---- 7. summary: Dice + foreground/macro ECE + temperature across the four settings ----
@@ -220,8 +229,8 @@ PY
 
 cp "$LOG" results/ 2>/dev/null || true
 echo ""; echo "################ ALL DONE  $(date '+%F %T') ################"
-echo "results in: $REPO_DIR/results/"
+echo "results in: $REPO_DIR/$SUBDIR/results/"
 ls -1 results/ 2>/dev/null | sed 's/^/  /'
 echo ""
 echo "Copy off the VM, e.g.:"
-echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/results ./"
+echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/$SUBDIR/results ./"

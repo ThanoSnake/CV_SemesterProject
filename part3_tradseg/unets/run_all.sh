@@ -18,7 +18,7 @@
 # GPU recommended (L4); torch assumed PRE-INSTALLED. Does NOT touch my_unet-uncertainty/.
 #
 # Bootstrap on the VM:
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/unets/run_all.sh
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part3_tradseg/unets/run_all.sh
 #   nohup bash run_all.sh &          # progress: tail -f ~/tradseg-run/run_all_*.log
 #
 # Env knobs (defaults: ONE fold, single training of each net):
@@ -42,8 +42,9 @@ BASE_TAG="${BASE_TAG:-baseline}"
 MC_TAG="${MC_TAG:-mcdropout}"
 WEAK_TAG="${WEAK_TAG:-weak02}"          # tag encodes the frac so a new frac retrains (not skip)
 
-REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject_TradMethods.git}"
+REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject.git}"
 BRANCH="${BRANCH:-main}"
+SUBDIR="${SUBDIR:-part3_tradseg}"      # this experiment's folder inside the monorepo
 WORKDIR="${WORKDIR:-$HOME/tradseg-run}"
 TASK="${TASK:-Task09_Spleen}"
 
@@ -59,19 +60,27 @@ run() { local l="$1"; shift; echo ""; echo "===== [$(date '+%F %T')] $l ====="; 
 # have <file>  -> true if the file exists AND we are not forcing a recompute
 have() { [ -f "$1" ] && [ -z "$FORCE" ]; }
 
-# ---- 1. clone / refresh -----------------------------------------------------
+# ---- 1. sparse-clone / refresh ONLY this experiment's subfolder -------------
+#     The monorepo holds all three experiments; we check out just $SUBDIR via a
+#     partial + cone sparse checkout so the other parts are never downloaded.
+#     (needs git >= 2.25; falls back to a normal clone if sparse is unavailable.)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
-    echo "refresh existing checkout"
+    echo "refresh existing checkout ($SUBDIR)"
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD || echo "WARN: refresh failed; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "branch $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD) | cwd $(pwd)"
-[ -f "unets/train.py" ] || { echo "ERROR: unets/train.py not found (flat layout expected)."; exit 1; }
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "branch $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD) | cwd $(pwd)"
+[ -f "unets/train.py" ] || { echo "ERROR: unets/train.py not found in $SUBDIR/ (flat layout expected)."; exit 1; }
 mkdir -p methods; touch methods/__init__.py
 
 # ---- 2. deps ----------------------------------------------------------------
@@ -88,7 +97,7 @@ PYCHK
 
 # ---- 3. data (once) ---------------------------------------------------------
 export TASK
-export DATA_DIR="$REPO_DIR/data/$TASK"
+export DATA_DIR="$PWD/data/$TASK"
 if [ ! -d "$DATA_DIR/imagesTr" ]; then
     echo ""; echo "===== [$(date '+%F %T')] download raw $TASK (~1.5 GB) ====="
     mkdir -p data
@@ -163,5 +172,5 @@ run "aggregate comparison" python3 agg_compare.py --unet-dir "$UOUT" --hybrid-di
 
 cp "$LOG" "$COUT/" 2>/dev/null || true
 echo ""; echo "############### DONE  $(date '+%F %T') ###############"
-echo "weights -> $REPO_DIR/$UOUT/ | hybrids -> $REPO_DIR/$HOUT/ | table -> $REPO_DIR/$COUT/summary.csv"
+echo "weights -> $REPO_DIR/$SUBDIR/$UOUT/ | hybrids -> $REPO_DIR/$SUBDIR/$HOUT/ | table -> $REPO_DIR/$SUBDIR/$COUT/summary.csv"
 [ -f "$COUT/summary.csv" ] && { echo ""; cat "$COUT/summary.csv"; }

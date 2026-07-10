@@ -6,9 +6,9 @@
 # uncertainty time (uncertainty_mc.py). The best checkpoint (lowest val loss) is
 # saved so test/uncertainty can reuse the weights without re-training.
 #
-# Reuses the baseline plumbing by IMPORT (no existing file is modified):
-#   run_epoch / set_seed / pick_device        <- train_eval.py
-#   build_plain_loaders (2-channel image+label) <- mc_common.py
+# Reuses the shared uncertainty plumbing by IMPORT:
+#   run_epoch / set_seed / pick_device          <- mc_common_hipp.py
+#   build_plain_loaders (2-channel image+label) <- mc_common_hipp.py
 #
 # Kaggle: the preprocessed data + splits are located via config, which reads the
 # DATA_DIR / TASK env vars. Point DATA_DIR at your (read-only) input dataset and
@@ -25,8 +25,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import config
-from train_eval import run_epoch, set_seed, pick_device
-from mc_common import build_plain_loaders
+from mc_common_hipp import build_plain_loaders, run_epoch, set_seed, pick_device
 from networks.UNET_mc import MCDropoutUNet
 from loss_functions.dice_loss import SoftDiceLoss
 

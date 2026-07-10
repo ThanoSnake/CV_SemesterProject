@@ -11,8 +11,9 @@
 #
 # You do NOT need to clone anything by hand -- this script clones for you.
 # Put this file on the VM and launch it so it survives an SSH disconnect:
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part2_losses/run/run_losses.sh
 #   nohup bash run_losses.sh &        # progress: tail -f ~/losses-run/run_*.log
-# In the morning copy off the VM:  ~/losses-run/repo/results/
+# In the morning copy off the VM:  ~/losses-run/repo/part2_losses/results/
 #
 # Assumes PyTorch (with CUDA) is already installed (standard on a Deep Learning VM);
 # everything else is pip-installed below. torch/numpy are NOT reinstalled.
@@ -21,9 +22,10 @@ set -uo pipefail   # -u: error on unset vars; pipefail through tee. NOT -e: a 3a
                    # must not throw away the runs that already finished.
 
 # ============================ CONFIG (edit these) ============================
-REPO_URL="https://github.com/ThanoSnake/my_unet.git"   # <-- your repo (edit if different)
-BRANCH="losses"                                         # <-- the branch to run
-WORKDIR="${WORKDIR:-$HOME/losses-run}"                  # where the repo + logs live
+REPO_URL="https://github.com/ThanoSnake/CV_SemesterProject.git"   # the monorepo
+BRANCH="main"                                          # branch that holds the code
+SUBDIR="part2_losses"                                  # this experiment's folder inside the monorepo
+WORKDIR="${WORKDIR:-$HOME/losses-run}"                 # where the repo + logs live
 TASK="Task08_HepaticVessel"
 
 FOLDS="0 1 2 3 4"                                       # full 5-fold CV for statistical confidence
@@ -67,23 +69,31 @@ run() {   # run() "label" cmd... : header + timing, CONTINUE on failure (overnig
     return 0
 }
 
-# ---- 1. clone (or update) the repo on the 'losses' branch ----
+# ---- 1. sparse-clone (or force-update) ONLY this experiment's subfolder ----
+#     The monorepo holds all three experiments; we check out just $SUBDIR via a
+#     partial + cone sparse checkout so the other parts are never downloaded.
+#     (needs git >= 2.25; falls back to a normal clone if sparse is unavailable.)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
-    echo "repo present -> force-updating to origin/$BRANCH (tracked code only; data/ & results/ untouched)"
+    echo "repo present -> force-updating $SUBDIR to origin/$BRANCH (tracked code only; data/ & results/ untouched)"
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" \
         && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD \
         || echo "WARN: could not update; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone of branch '$BRANCH' failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "on branch: $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)"
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "on branch: $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD)  |  cwd: $(pwd)"
 
 # ---- 2. package dirs need __init__.py (they may be .gitignored -> recreate; harmless if present) ----
-for d in datasets datasets/two_dim datasets/three_dim networks loss_functions evaluation utilities; do
+for d in datasets datasets/two_dim networks loss_functions evaluation utilities; do
     mkdir -p "$d"; touch "$d/__init__.py"
 done
 
@@ -95,7 +105,7 @@ python3 -m pip install --break-system-packages $PKGS 2>/dev/null || python3 -m p
 
 # ---- 4. data: reuse if already preprocessed with the boundary maps, else fetch + preprocess ----
 export TASK
-export DATA_DIR="$REPO_DIR/data/$TASK"
+export DATA_DIR="$PWD/data/$TASK"
 PREP_DIR="$DATA_DIR/preprocessed"
 SPLITS="$DATA_DIR/splits.pkl"
 
@@ -169,8 +179,8 @@ run "compare POST-PROC (after)"        python3 train_eval.py --compare $PP_FILES
 
 cp "$LOG" results/ 2>/dev/null || true       # keep a copy of the log next to the results
 echo ""; echo "################ ALL DONE  $(date '+%F %T') ################"
-echo "results in: $REPO_DIR/results/"
+echo "results in: $REPO_DIR/$SUBDIR/results/"
 ls -1 results/ | sed 's/^/  /'
 echo ""
 echo "Copy the whole folder off the VM, e.g.:"
-echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/results ./"
+echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/$SUBDIR/results ./"

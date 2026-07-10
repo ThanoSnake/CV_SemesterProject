@@ -10,10 +10,11 @@
 # -> print a Dice / ECE / temperature summary. Nothing morphological is used.
 #
 # You do NOT clone anything by hand -- this script clones for you. Put it on the VM
-# and launch it so it survives an SSH disconnect. Easiest bootstrap:
-#   curl -O https://raw.githubusercontent.com/ThanoSnake/UncertaintyUnet/main/run/run_all_spleen.sh
+# and launch it so it survives an SSH disconnect. Easiest bootstrap (grabs just this
+# one script from the monorepo):
+#   curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject/main/part1_uncertainty/run/run_all_spleen.sh
 #   nohup bash run_all_spleen.sh &        # progress: tail -f ~/spleen-run/run_*.log
-# In the morning copy off the VM:  ~/spleen-run/repo/results/
+# In the morning copy off the VM:  ~/spleen-run/repo/part1_uncertainty/results/
 #
 # Assumes PyTorch (with CUDA) is already installed (standard on a Deep Learning VM);
 # everything else is pip-installed below. torch/numpy are NOT reinstalled.
@@ -22,8 +23,9 @@ set -uo pipefail   # -u: error on unset vars; pipefail through tee. NOT -e: a 3a
                    # failure must not throw away the runs that already finished.
 
 # ============================ CONFIG (edit these) ============================
-REPO_URL="https://github.com/ThanoSnake/UncertaintyUnet.git"
-BRANCH="main"                               # branch that holds the code (repo root)
+REPO_URL="https://github.com/ThanoSnake/CV_SemesterProject.git"
+BRANCH="main"                               # branch that holds the code
+SUBDIR="part1_uncertainty"                  # this experiment's folder inside the monorepo
 WORKDIR="${WORKDIR:-$HOME/spleen-run}"      # where the repo + logs live
 TASK="Task09_Spleen"
 DATA_TAR_URL="https://msd-for-monai.s3-us-west-2.amazonaws.com/${TASK}.tar"
@@ -65,29 +67,37 @@ run() {   # run() "label" cmd... : header + timing, CONTINUE on failure (overnig
     return 0
 }
 
-# ---- 1. clone (or force-update) the repo on the main branch ----
+# ---- 1. sparse-clone (or force-update) ONLY this experiment's subfolder ----
+#     The monorepo holds all three experiments; we check out just $SUBDIR via a
+#     partial + cone sparse checkout so the other parts are never downloaded.
+#     (needs git >= 2.25; falls back to a normal clone if sparse is unavailable.)
 REPO_DIR="$WORKDIR/repo"
 if [ -d "$REPO_DIR/.git" ]; then
-    echo "repo present -> force-updating to origin/$BRANCH (tracked code only; data/ & results/ untouched)"
+    echo "repo present -> force-updating $SUBDIR to origin/$BRANCH (tracked code only; data/ & results/ untouched)"
+    git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" 2>/dev/null || true
     git -C "$REPO_DIR" fetch origin "$BRANCH" \
         && git -C "$REPO_DIR" checkout "$BRANCH" \
         && git -C "$REPO_DIR" reset --hard FETCH_HEAD \
         || echo "WARN: could not update; using existing checkout"
 else
-    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
+    git clone --filter=blob:none --no-checkout --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_DIR" \
         || { echo "git clone of branch '$BRANCH' failed -> aborting"; exit 1; }
+    git -C "$REPO_DIR" sparse-checkout init --cone \
+        && git -C "$REPO_DIR" sparse-checkout set "$SUBDIR" \
+        && git -C "$REPO_DIR" checkout "$BRANCH" \
+        || { echo "sparse checkout of '$SUBDIR' failed -> aborting"; exit 1; }
 fi
-cd "$REPO_DIR" || { echo "cannot cd $REPO_DIR"; exit 1; }
-echo "on branch: $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)  |  cwd: $(pwd)"
+cd "$REPO_DIR/$SUBDIR" || { echo "cannot cd $REPO_DIR/$SUBDIR"; exit 1; }
+echo "on branch: $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_DIR" rev-parse --short HEAD)  |  cwd: $(pwd)"
 
-# sanity: the *_spleen files must actually be on this branch
+# sanity: the *_spleen files must actually be on this branch / in this subfolder
 [ -f "run_preprocessing_mc_spleen.py" ] || {
     echo "ERROR: run_preprocessing_mc_spleen.py not found in $(pwd)."
-    echo "       Push the *_spleen files to branch '$BRANCH' first."
+    echo "       Push the *_spleen files under $SUBDIR/ on branch '$BRANCH' first."
     exit 1; }
 
 # ---- 2. package dirs need __init__.py (may be .gitignored -> recreate; harmless if present) ----
-for d in datasets datasets/two_dim datasets/three_dim networks loss_functions evaluation utilities; do
+for d in datasets datasets/two_dim networks loss_functions evaluation utilities; do
     mkdir -p "$d"; touch "$d/__init__.py"
 done
 
@@ -218,8 +228,8 @@ PY
 
 cp "$LOG" results/ 2>/dev/null || true       # keep a copy of the log next to the results
 echo ""; echo "################ ALL DONE  $(date '+%F %T') ################"
-echo "results in: $REPO_DIR/results/"
+echo "results in: $REPO_DIR/$SUBDIR/results/"
 ls -1 results/ 2>/dev/null | sed 's/^/  /'
 echo ""
 echo "Copy off the VM, e.g.:"
-echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/results ./"
+echo "  gcloud compute scp --recurse <user>@<vm>:$REPO_DIR/$SUBDIR/results ./"

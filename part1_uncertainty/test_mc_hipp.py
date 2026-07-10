@@ -2,12 +2,10 @@
 # Test the MC-Dropout U-Net -- classic metrics only (deterministic)
 #
 # Loads a trained checkpoint, runs a SINGLE deterministic forward pass with
-# dropout OFF (model.eval()), and writes the same <tag>_f<fold>_scores.json as
-# the baseline. That means the existing aggregation utilities work unchanged:
-#   python train_eval.py --fold-mean mcdropout
-#   python train_eval.py --compare baseline_mean_scores.json mcdropout_mean_scores.json
+# dropout OFF (model.eval()), and writes a <tag>_f<fold>_scores.json (Dice/ASSD
+# per class). The Dice/ECE summary across settings is produced by run_all_hippocampus.sh.
 #
-# The stochastic / uncertainty side lives in uncertainty_mc.py.
+# The stochastic / uncertainty side lives in uncertainty_mc_hipp.py.
 #
 
 import argparse
@@ -16,8 +14,7 @@ import os
 import torch
 
 import config
-from train_eval import pick_device, evaluate_test
-from mc_common import build_plain_loaders
+from mc_common_hipp import build_plain_loaders, pick_device, evaluate_test
 from networks.UNET_mc import MCDropoutUNet
 
 
